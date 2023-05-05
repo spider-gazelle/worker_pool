@@ -1,0 +1,11 @@
+name: worker_pool
+version: 1.0.0
+
+authors:
+  - Stephen von Takach <steve@place.tech>
+
+development_dependencies:
+  ameba:
+    github: veelenga/ameba
+
+license: MIT
