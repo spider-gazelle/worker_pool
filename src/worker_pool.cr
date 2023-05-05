@@ -49,12 +49,9 @@ class WorkerPool
       loop do
         begin
           @mutex.synchronize { @available += 1 }
-
-          select
-          when proc = @pool.receive
-            @mutex.synchronize { @available -= 1 }
-            proc.call
-          end
+          proc = @pool.receive
+          @mutex.synchronize { @available -= 1 }
+          proc.call
         rescue error : Channel::ClosedError
           break if @pool.closed?
           handle_error(error)
@@ -69,10 +66,7 @@ class WorkerPool
     spawn(same_thread: @same_thread) do
       loop do
         begin
-          select
-          when proc = @pool.receive
-            proc.call
-          end
+          @pool.receive.call
         rescue error : Channel::ClosedError
           break if @pool.closed?
           handle_error(error)
