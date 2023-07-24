@@ -15,7 +15,9 @@ class WorkerPool
     @work = Channel(Proc(Nil)).new(1)
     @workers = Array(Fiber).new(@size) { Fiber.new { worker_loop } }
 
-    spawn(same_thread: true) { allocater_loop }
+    {% if flag?(:preview_mt) %}
+      spawn(same_thread: true) { allocater_loop }
+    {% end %}
     spawn(same_thread: true) { reaper }
   end
 
@@ -81,6 +83,7 @@ class WorkerPool
     sleep_for = @reap_period
     reaper_fiber = Fiber.current
     work_channel = @work
+    workers = @workers
 
     # we will accept a 10% buffer over initial size
     buffer_size = @initial_size // 10
@@ -99,7 +102,7 @@ class WorkerPool
       # we'll reduce the pool size by 10%
       if available >= breakpoint
         @size -= buffer_size
-        reaping = @workers.pop(buffer_size)
+        reaping = workers.pop(buffer_size)
         reaping.each do |worker_fiber|
           reaper_fiber.enqueue
           worker_fiber.resume
@@ -108,7 +111,7 @@ class WorkerPool
     end
 
     # cleanup when channel closed
-    @workers.each do |worker_fiber|
+    workers.each do |worker_fiber|
       reaper_fiber.enqueue
       worker_fiber.resume
     end
@@ -128,10 +131,21 @@ class WorkerPool
     !@work.closed?
   end
 
-  # perform a task using the pool
-  def perform(&block : Proc(Nil))
-    @work.send(block)
-  end
+  {% begin %}
+    # perform a task using the pool
+    def perform(&block : Proc(Nil))
+      {% if flag?(:preview_mt) %}
+        @work.send(block)
+      {% else %}
+        @current_work = block
+        Fiber.current.enqueue
+        @workers.pop {
+          @size += 1
+          Fiber.new { worker_loop }
+        }.resume
+      {% end %}
+    end
+  {% end %}
 
   # fibers are discarded once they complete and no new work will be accepted
   def close
