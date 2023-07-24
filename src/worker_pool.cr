@@ -1,79 +1,121 @@
 require "log"
 
+# a pool of fibers ready to execute tasks
+# there is no bound on growth so long running tasks like websockets
+# can run without starving other tasks. The aim of this pool is to
+# reduce the impact of fiber allocation to a typical workload
 class WorkerPool
   Log = ::Log.for(self)
   {% begin %}
     VERSION = {{ `shards version "#{__DIR__}"`.chomp.stringify.downcase }}
   {% end %}
 
-  def initialize(@size, @same_thread = true, @tracking = true)
-    capacity = @size // 3
-    capacity = 1 if capacity <= 0
+  def initialize(@initial_size, @reap_period : Time::Span = 15.seconds)
+    @size = @initial_size
+    @work = Channel(Proc(Nil)).new(1)
+    @workers = Array(Fiber).new(@size) { Fiber.new { worker_loop } }
 
-    @pool = Channel(Proc(Nil)).new(capacity)
-
-    if tracking?
-      size.times { tracked_fiber }
-    else
-      size.times { performance_fiber }
-    end
+    spawn(same_thread: true) { allocater_loop }
+    spawn(same_thread: true) { reaper }
   end
 
   # number of fibers in the pool
   getter size : Int32
+  getter initial_size : Int32
 
-  # number of fibers currently available
-  getter available : Int32 = 0
+  # the work being allocated to the worker loop
+  @current_work : Proc(Nil)? = nil
 
-  # are fibers all running on the same thread?
-  getter? same_thread : Bool
+  # a worker fiber
+  private def worker_loop
+    worker_fiber = Fiber.current
+    work_channel = @work
+    workers = @workers
 
-  # are we tracking fiber usage
-  getter? tracking : Bool
-
-  @mutex = Mutex.new
-  @pool : Channel(Proc(Nil))
-
-  # is the fiber pool running
-  def running?
-    !@pool.closed?
-  end
-
-  # is there an available fiber or would we block waiting for a fiber
-  def would_block?
-    available == 0
-  end
-
-  protected def tracked_fiber
-    spawn(same_thread: @same_thread) do
-      loop do
-        begin
-          @mutex.synchronize { @available += 1 }
-          proc = @pool.receive
-          @mutex.synchronize { @available -= 1 }
-          proc.call
-        rescue error : Channel::ClosedError
-          break if @pool.closed?
-          handle_error(error)
-        rescue error
-          handle_error(error)
+    loop do
+      begin
+        # look for any current work
+        if work = @current_work
+          @current_work = nil
+          work.call
+        else # we are discarding this fiber
+          break
         end
+      rescue error
+        handle_error(error)
+      end
+
+      break if work_channel.closed?
+      workers << worker_fiber
+      sleep
+    end
+  end
+
+  # the fiber that allocates work to fibers
+  private def allocater_loop
+    allocater_fiber = Fiber.current
+    work_channel = @work
+    workers = @workers
+
+    loop do
+      begin
+        proc = work_channel.receive
+
+        worker = if workers.size > 0
+                   workers.pop
+                 else
+                   @size += 1
+                   Fiber.new { worker_loop }
+                 end
+
+        @current_work = proc
+        allocater_fiber.enqueue
+        worker.resume
+      rescue error : Channel::ClosedError
+        break if work_channel.closed?
+        handle_error(error)
+      rescue error
+        handle_error(error)
       end
     end
   end
 
-  protected def performance_fiber
-    spawn(same_thread: @same_thread) do
-      loop do
-        begin
-          @pool.receive.call
-        rescue error : Channel::ClosedError
-          break if @pool.closed?
-          handle_error(error)
-        rescue error
-          handle_error(error)
+  # the pool will resize to handle load, this cleans up fibers
+  # once load has subsided
+  private def reaper
+    sleep_for = @reap_period
+    reaper_fiber = Fiber.current
+    work_channel = @work
+
+    # we will accept a 10% buffer over initial size
+    buffer_size = @initial_size // 10
+    buffer_size = 1 if buffer_size = 0
+
+    ignore_size = initial_size + buffer_size
+
+    # 20% over capacity is our breakpoint
+    breakpoint = buffer_size * 2
+
+    loop do
+      sleep sleep_for
+      break if work_channel.closed?
+      next if ignore_size >= @size
+
+      # we'll reduce the pool size by 10%
+      if available >= breakpoint
+        @size -= buffer_size
+        reaping = @workers.pop(buffer_size)
+        reaping.each do |worker_fiber|
+          reaper_fiber.enqueue
+          worker_fiber.resume
         end
       end
+    end
+
+    # cleanup when channel closed
+    @workers.each do |worker_fiber|
+      reaper_fiber.enqueue
+      worker_fiber.resume
     end
   end
 
@@ -81,27 +123,30 @@ class WorkerPool
     Log.error(exception: error) { "unhandled exception in fiber pool" }
   end
 
-  # perform a task using the pool
-  def perform(&block : Proc(Nil))
-    @pool.send(block)
+  # number of workers waiting to be allocated work
+  def available
+    @workers.size
   end
 
-  # blocks until all the fibers complete if tracking
-  def stop
+  # is the fiber pool running
+  def running?
+    !@work.closed?
+  end
+
+  # perform a task using the pool
+  def perform(&block : Proc(Nil))
+    @work.send(block)
+  end
+
+  # fibers are discarded once they complete and no new work will be accepted
+  def close
     return unless running?
-
-    @pool.close
-
-    if tracking?
-      while available != size
-        Fiber.yield
-      end
-    end
+    @work.close
   end
 
   # ensure the fibers complete if the pool goes out of scope
   def finalize
     return unless running?
-    @pool.close
+    @work.close
   end
 end

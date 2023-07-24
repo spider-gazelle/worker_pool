@@ -1,20 +1,11 @@
 require "./spec_helper"
 
 describe WorkerPool do
-  it "works in tracking mode" do
-    pool = WorkerPool.new(2, tracking: true)
-
-    pool.running?.should be_true
-    pool.size.should eq 2
-    pool.available.should eq 0
-    pool.would_block?.should be_true
-
-    Fiber.yield
-
+  it "works" do
+    pool = WorkerPool.new(2)
     pool.running?.should be_true
     pool.size.should eq 2
     pool.available.should eq 2
-    pool.would_block?.should be_false
 
     task_1 = false
     pool.perform do
@@ -24,7 +15,6 @@ describe WorkerPool do
     Fiber.yield
 
     pool.available.should eq 1
-    pool.would_block?.should be_false
 
     task_2 = false
     pool.perform do
@@ -34,83 +24,17 @@ describe WorkerPool do
     Fiber.yield
 
     pool.available.should eq 0
-    pool.would_block?.should be_true
 
-    # task 3 will block until a fiber is available
+    # task 3 will create a new fiber
     task_3 = false
     pool.perform { task_3 = true }
-    pool.stop
+    sleep 1.2
 
-    task_1.should be_true
-    task_2.should be_true
-    task_3.should be_true
-  end
+    pool.size.should eq 3
+    pool.available.should eq 3
+    pool.initial_size.should eq 2
 
-  it "works in performance mode" do
-    pool = WorkerPool.new(2, tracking: false)
-
-    pool.running?.should be_true
-    pool.size.should eq 2
-    pool.available.should eq 0
-    pool.would_block?.should be_true
-
-    Fiber.yield
-
-    pool.running?.should be_true
-    pool.size.should eq 2
-    pool.available.should eq 0
-    pool.would_block?.should be_true
-
-    task_1 = false
-    pool.perform do
-      sleep 1
-      task_1 = true
-    end
-    Fiber.yield
-
-    task_2 = false
-    pool.perform do
-      sleep 1
-      task_2 = true
-    end
-    Fiber.yield
-
-    task_3 = false
-    pool.perform { task_3 = true }
-    pool.stop
-
-    # stop in untracked doesn't wait for completion
-    task_1.should be_false
-    task_2.should be_false
-    task_3.should be_false
-  end
-
-  it "waits for running tasks to complete in tracking mode" do
-    pool = WorkerPool.new(2, tracking: true)
-
-    task_1 = false
-    pool.perform do
-      sleep 1
-      task_1 = true
-    end
-    Fiber.yield
-
-    task_2 = false
-    pool.perform do
-      sleep 1
-      task_2 = true
-    end
-
-    task_3 = false
-    pool.perform do
-      sleep 1
-      task_3 = true
-    end
-
-    task_1.should be_false
-    task_2.should be_false
-    task_3.should be_false
-    pool.stop
+    pool.close
     task_1.should be_true
     task_2.should be_true
     task_3.should be_true
@@ -118,12 +42,49 @@ describe WorkerPool do
 
   it "handles errors" do
     pool = WorkerPool.new(1)
-    pool.perform { raise "testing error" }
+    pool.perform { raise "testing error handler" }
+    sleep 0.2
 
     task_1 = false
     pool.perform { task_1 = true }
     Fiber.yield
 
     task_1.should be_true
+    pool.size.should eq 1
+    pool.close
+  end
+
+  it "reaps excess workers" do
+    pool = WorkerPool.new(1, reap_period: 2.second)
+    pool.perform { sleep 1 }
+    pool.perform { sleep 1 }
+    pool.perform { sleep 1 }
+    pool.perform { sleep 1 }
+
+    sleep 0.2
+
+    pool.size.should eq 4
+    pool.available.should eq 0
+    pool.initial_size.should eq 1
+
+    sleep 2
+
+    pool.size.should eq 3
+    pool.available.should eq 3
+    pool.initial_size.should eq 1
+
+    sleep 2
+
+    pool.size.should eq 2
+    pool.available.should eq 2
+    pool.initial_size.should eq 1
+
+    sleep 2
+
+    pool.size.should eq 2
+    pool.available.should eq 2
+    pool.initial_size.should eq 1
+
+    pool.close
   end
 end
