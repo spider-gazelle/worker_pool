@@ -1,7 +1,10 @@
 # worker_pool
 
-Allocates a fixed pool of fibers for performing work.
-This reduces the overhead of allocating stacks and helps limit memory usage.
+Allocates a minimum number fibers for performing work
+
+* grows and shrinks the pool as required
+* reduces the overhead of allocating stacks for repeditive, bursty, work
+* handles long running tasks like websockets
 
 ## Installation
 
@@ -22,7 +25,7 @@ require "worker_pool"
 
 pool = WorkerPool.new(100)
 
-10_000.times do
+100.times do
   pool.perform { my_task }
 end
 ```
@@ -37,4 +40,4 @@ end
 
 ## Contributors
 
-- [Stephen von Takach](https://github.com/stakach) - creator and maintainer
+* [Stephen von Takach](https://github.com/stakach) - creator and maintainer
