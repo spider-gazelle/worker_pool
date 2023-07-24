@@ -60,17 +60,12 @@ class WorkerPool
     loop do
       begin
         proc = work_channel.receive
-
-        worker = if workers.size > 0
-                   workers.pop
-                 else
-                   @size += 1
-                   Fiber.new { worker_loop }
-                 end
-
         @current_work = proc
         allocater_fiber.enqueue
-        worker.resume
+        workers.pop {
+          @size += 1
+          Fiber.new { worker_loop }
+        }.resume
       rescue error : Channel::ClosedError
         break if work_channel.closed?
         handle_error(error)
@@ -89,7 +84,7 @@ class WorkerPool
 
     # we will accept a 10% buffer over initial size
     buffer_size = @initial_size // 10
-    buffer_size = 1 if buffer_size = 0
+    buffer_size = 1 if buffer_size == 0
 
     ignore_size = initial_size + buffer_size
 
