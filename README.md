@@ -3,7 +3,7 @@
 Allocates a minimum number fibers for performing work
 
 * grows and shrinks the pool as required
-* reduces the overhead of allocating stacks for repetitive, bursty, work
+* reduces the overhead of allocating fibers for repetitive, bursty, work
 * handles long running tasks like websockets
 
 ## Installation
