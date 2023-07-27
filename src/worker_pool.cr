@@ -13,7 +13,7 @@ class WorkerPool
   def initialize(@initial_size, @reap_period : Time::Span = 15.seconds)
     @size = @initial_size
     @work = Channel(Proc(Nil)).new(1)
-    @workers = Array(Fiber).new(@size) { Fiber.new { worker_loop } }
+    @workers = Deque(Fiber).new(@size) { Fiber.new { worker_loop } }
 
     {% if flag?(:preview_mt) %}
       spawn(same_thread: true) { allocater_loop }
@@ -48,7 +48,7 @@ class WorkerPool
       end
 
       break if work_channel.closed?
-      workers << worker_fiber
+      workers.push worker_fiber
       sleep
     end
   end
@@ -102,7 +102,8 @@ class WorkerPool
       # we'll reduce the pool size by 10%
       if available >= breakpoint
         @size -= buffer_size
-        reaping = workers.pop(buffer_size)
+        reaping = workers.shift(buffer_size)
+        next unless reaping
         reaping.each do |worker_fiber|
           reaper_fiber.enqueue
           worker_fiber.resume
